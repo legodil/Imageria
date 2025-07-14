@@ -1,174 +1,80 @@
 import os
 import csv
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputFile
 from telegram.ext import (
-    ApplicationBuilder, CommandHandler, CallbackQueryHandler,
-    MessageHandler, ContextTypes, filters
+    ApplicationBuilder, CommandHandler, MessageHandler,
+    CallbackQueryHandler, ContextTypes, filters
 )
 
-BOT_TOKEN = "8085608463:AAFLqDCyv0vGvtD0PpCLE0SXNiYqFrEJqLA"
-UPI_ID = "93366749682@omni"
-DESIGNER_ID = 1653550351  # Your Telegram ID
+import logging
 
-DP_IMAGES = os.listdir("dp_catalog")
-NAME_IMAGES = os.listdir("name_catalog")
-USER_STATE = {}
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))  # Add admin ID in environment variable
+
+DP_PATH = "BOT/dp_catalog"
 ORDER_LOG_FILE = "order_log.csv"
+USER_STATE = {}
 
-# Ensure order log file exists
-if not os.path.exists(ORDER_LOG_FILE):
-    with open(ORDER_LOG_FILE, "w", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow(["Username", "Telegram ID", "Order Type", "Design", "Custom Name", "Transaction ID"])
+logging.basicConfig(level=logging.INFO)
+
+def get_dp_keyboard():
+    buttons = []
+    for img in os.listdir(DP_PATH):
+        buttons.append([InlineKeyboardButton(img, callback_data=f"buy_{img}")])
+    return InlineKeyboardMarkup(buttons)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Hello! 👋 What would you like to buy?")
-    keyboard = [
-        [InlineKeyboardButton("🖼 DP Design", callback_data="dp")],
-        [InlineKeyboardButton("✍️ Name Customized Image", callback_data="name")]
-    ]
-    await update.message.reply_text("Choose an option:", reply_markup=InlineKeyboardMarkup(keyboard))
+    await update.message.reply_text(
+        "👋 Welcome to Imageria!\nClick below to view and buy a DP image.",
+        reply_markup=get_dp_keyboard()
+    )
 
-async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    text = update.message.text
-
-    if USER_STATE.get(user_id) == "waiting_for_name":
-        context.user_data["custom_name"] = text
-        USER_STATE[user_id] = "waiting_for_payment_screenshot"
-        keyboard = [[InlineKeyboardButton("✅ I've Paid", callback_data="paid_name")]]
-        await update.message.reply_text(
-            f"""To buy this custom image, send ₹X to:
-
-💸 *{UPI_ID}*
-
-After payment:
-- Send screenshot here
-- Send transaction ID
-- Mention your Telegram ID
-
-Then tap the button below.""",
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-
-    elif USER_STATE.get(user_id) == "waiting_for_payment_screenshot":
-        photo_file = context.user_data.get("last_screenshot")
-        order_type = context.user_data.get("order_type", "Unknown")
-        design = context.user_data.get("dp_choice") if order_type == "DP" else context.user_data.get("name_sample")
-        custom_name = context.user_data.get("custom_name") if order_type == "Name" else "-"
-
-        if photo_file:
-            caption = f"🆕 Payment Proof Received!\n\n👤 From: @{update.effective_user.username or update.effective_user.first_name}\n🆔 Telegram ID: {user_id}\n📦 Order Type: {order_type}\n🎨 Design: {design}\n✏️ Name: {custom_name}\n💳 Transaction ID: {text}"
-
-            await context.bot.send_photo(
-                chat_id=DESIGNER_ID,
-                photo=photo_file,
-                caption=caption
-            )
-
-            # Save to CSV log
-            with open(ORDER_LOG_FILE, "a", newline="") as f:
-                writer = csv.writer(f)
-                writer.writerow([
-                    update.effective_user.username or update.effective_user.first_name,
-                    user_id,
-                    order_type,
-                    design,
-                    custom_name,
-                    text
-                ])
-
-            await update.message.reply_text("✅ Your order and payment have been sent to the designer. Please wait for delivery.")
-            context.user_data["last_screenshot"] = None
-        else:
-            await update.message.reply_text("📸 Please send screenshot first, then the transaction ID.")
-
-    else:
-        await update.message.reply_text("Please use /start to begin.")
-
-async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if USER_STATE.get(user_id) == "waiting_for_payment_screenshot":
-        photo_file_id = update.message.photo[-1].file_id
-        context.user_data["last_screenshot"] = photo_file_id
-        await update.message.reply_text("📸 Screenshot received. Now send transaction ID.")
-
-async def handle_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def buy_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+    img_name = query.data.split("_", 1)[1]
+    USER_STATE[query.from_user.id] = img_name
 
-    if query.data == "dp":
-        context.user_data["order_type"] = "DP"
-        for img in DP_IMAGES:
-            with open(f"dp_catalog/{img}", "rb") as photo:
-                await context.bot.send_photo(
-                    chat_id=update.effective_chat.id,
-                    photo=photo,
-                    caption=f"{img}\nClick below to buy this!",
-                    reply_markup=InlineKeyboardMarkup([
-                        [InlineKeyboardButton("Buy", callback_data=f"buy_dp:{img}")]
-                    ])
-                )
-
-    elif query.data == "name":
-        context.user_data["order_type"] = "Name"
-        for img in NAME_IMAGES:
-            with open(f"name_catalog/{img}", "rb") as photo:
-                await context.bot.send_photo(
-                    chat_id=update.effective_chat.id,
-                    photo=photo,
-                    caption=f"{img}\nClick below to choose this!",
-                    reply_markup=InlineKeyboardMarkup([
-                        [InlineKeyboardButton("Choose", callback_data=f"buy_name:{img}")]
-                    ])
-                )
-
-    elif query.data.startswith("buy_dp:"):
-        filename = query.data.split(":")[1]
-        context.user_data["dp_choice"] = filename
-        context.user_data["order_type"] = "DP"
-
-        keyboard = [[InlineKeyboardButton("✅ I've Paid", callback_data="paid_dp")]]
-        await query.message.reply_text(
-            f"""To buy this DP, send ₹X to:
-
-💸 *{UPI_ID}*
-
-After payment:
-- Send screenshot here
-- Send transaction ID
-- Mention your Telegram ID
-
-Then tap the button below.""",
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-        USER_STATE[query.from_user.id] = "waiting_for_payment_screenshot"
-
-    elif query.data.startswith("buy_name:"):
-        filename = query.data.split(":")[1]
-        context.user_data["name_sample"] = filename
-        context.user_data["order_type"] = "Name"
-        USER_STATE[query.from_user.id] = "waiting_for_name"
-        await query.message.reply_text("Please send the name you want on the image.")
-
-    elif query.data == "paid_dp":
-        await query.message.reply_text("✅ Your payment has been sent to the designer. Please wait for delivery.")
-
-    elif query.data == "paid_name":
-        await query.message.reply_text("✅ Thanks! Your customized image will be delivered shortly.")
-        name = context.user_data.get("custom_name")
-        filename = context.user_data.get("name_sample")
-        await context.bot.send_message(
-            DESIGNER_ID,
-            f"🆕 New Order (Custom Name Image):\nFrom: @{query.from_user.username or query.from_user.first_name}\nName: {name}\nDesign: {filename}"
+    with open(os.path.join(DP_PATH, img_name), "rb") as img_file:
+        await query.message.reply_photo(
+            photo=InputFile(img_file),
+            caption="This is your selected DP.\nSend your UPI Transaction ID & Screenshot below."
         )
 
-app = ApplicationBuilder().token(BOT_TOKEN).build()
-app.add_handler(CommandHandler("start", start))
-app.add_handler(CallbackQueryHandler(handle_choice))
-app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
-app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+async def handle_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    img_name = USER_STATE.get(user_id)
 
-app.run_polling()
+    if not img_name:
+        await update.message.reply_text("❌ You haven't selected any DP image yet.")
+        return
+
+    txn_id = update.message.caption or update.message.text
+    photo = update.message.photo[-1].file_id if update.message.photo else None
+
+    await update.message.reply_text("✅ Payment proof received. Please wait for manual verification.")
+
+    msg = f"🧾 Payment Proof\nUser: @{update.message.from_user.username} ({user_id})\nSelected: {img_name}\nTransaction ID: {txn_id}"
+
+    if photo:
+        await context.bot.send_photo(chat_id=ADMIN_ID, photo=photo, caption=msg)
+    else:
+        await context.bot.send_message(chat_id=ADMIN_ID, text=msg)
+
+    # Save to log
+    with open(ORDER_LOG_FILE, "a", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow([user_id, img_name, txn_id])
+
+async def unknown(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("❓ Sorry, I didn't understand that. Use /start to begin.")
+
+if __name__ == "__main__":
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
+
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CallbackQueryHandler(buy_callback))
+    app.add_handler(MessageHandler(filters.TEXT | filters.PHOTO, handle_payment))
+    app.add_handler(MessageHandler(filters.COMMAND, unknown))
+
+    app.run_polling()
