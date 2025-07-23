@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: imageria-bot
+    name: imageria
     env: python
     plan: free
     buildCommand: ""
